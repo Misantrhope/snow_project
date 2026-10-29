@@ -197,7 +197,7 @@ def save_snapshot(vapor, ice, ice_age, t, name, step, half,
     fig.savefig(save_path, dpi=130)
 
 
-def assemble_gif(frame_paths, gif_path, fps, max_dim=900):
+def assemble_gif(frame_paths, gif_path, fps, max_dim=500):
     imgs = []
     target_size = None
     for p in frame_paths:
@@ -212,11 +212,11 @@ def assemble_gif(frame_paths, gif_path, fps, max_dim=900):
                 target_size = img.size
         if img.size != target_size:
             img = img.resize(target_size, Image.LANCZOS)
-        imgs.append(img.convert("P", palette=Image.ADAPTIVE))
+        imgs.append(img.convert("P", palette=Image.ADAPTIVE, colors=64))
     if not imgs:
         return False
     imgs[0].save(gif_path, save_all=True, append_images=imgs[1:],
-                 duration=int(1000 / fps), loop=0, optimize=True)
+                 duration=int(1000 / fps), loop=0, optimize=True, disposal=2)
     return True
 
 
@@ -308,7 +308,7 @@ class SnowflakeAnimator:
         self.line_hex, = self.ax_polar.plot([], [], lw=2.2,
                                             label=self.names_ru[1], color="#d62728")
         self.ax_polar.set_title("Профиль r_max(θ): 4 vs 6 лепестков", fontsize=10)
-        self.ax_polar.legend(loc="upper right", fontsize=9)
+        self.ax_polar.legend(loc="center left", bbox_to_anchor=(-0.15, 0.5), fontsize=9)
         self.ax_polar.set_theta_zero_location("E")
 
         self.cx = self.cy = self.N // 2
@@ -383,10 +383,10 @@ class SnowflakeAnimator:
 
 
 PRESETS = {
-    "potato": dict(N=201, n_steps=300, interp=4, fps=15, dpi=50,
-                   gif_skip=3, save_every=100),
-    "medium": dict(N=401, n_steps=500, interp=6, fps=15, dpi=80,
-                   gif_skip=6, save_every=100),
+    "potato": dict(N=201, n_steps=200, interp=2, fps=10, dpi=40,
+                   gif_skip=2, save_every=100),
+    "medium": dict(N=401, n_steps=400, interp=4, fps=10, dpi=60,
+                   gif_skip=4, save_every=100),
     "excellent": dict(N=601, n_steps=800, interp=8, fps=15, dpi=100,
                       gif_skip=10, save_every=100),
 }
@@ -594,7 +594,7 @@ class SimWorker(QThread):
         self.progress.emit(anim.n_frames, anim.n_frames, "Сборка GIF...")
         self.log.emit(f"Собрано {len(frame_paths)} PNG, упаковка в GIF...")
 
-        ok = assemble_gif(frame_paths, GIF_PATH, p["fps"], max_dim=900)
+        ok = assemble_gif(frame_paths, GIF_PATH, p["fps"], max_dim=500)
         if not ok:
             raise RuntimeError("Не удалось собрать GIF (нет кадров)")
 
