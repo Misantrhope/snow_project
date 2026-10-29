@@ -308,7 +308,7 @@ class SnowflakeAnimator:
         self.line_hex, = self.ax_polar.plot([], [], lw=2.2,
                                             label=self.names_ru[1], color="#d62728")
         self.ax_polar.set_title("Профиль r_max(θ): 4 vs 6 лепестков", fontsize=10)
-        self.ax_polar.legend(loc="center left", bbox_to_anchor=(-0.15, 0.5), fontsize=9)
+        self.ax_polar.legend(loc="center right", bbox_to_anchor=(-0.15, 0.5), fontsize=9)
         self.ax_polar.set_theta_zero_location("E")
 
         self.cx = self.cy = self.N // 2
@@ -367,14 +367,22 @@ class SnowflakeAnimator:
         if (frame + 1) % self.interp == 0 and (frame + 1) < self.n_frames:
             self.state_prev = self.state_curr
 
-            t0 = time.perf_counter()
-            self.sims[0].step()
-            t1 = time.perf_counter()
-            self.sims[1].step()
-            t2 = time.perf_counter()
-
-            self.time_sq.append(t1 - t0)
-            self.time_hex.append(t2 - t1)
+            if frame % 2 == 0:
+                t0 = time.perf_counter()
+                self.sims[0].step()
+                t1 = time.perf_counter()
+                self.sims[1].step()
+                t2 = time.perf_counter()
+                self.time_sq.append(t1 - t0)
+                self.time_hex.append(t2 - t1)
+            else:
+                t0 = time.perf_counter()
+                self.sims[1].step()
+                t1 = time.perf_counter()
+                self.sims[0].step()
+                t2 = time.perf_counter()
+                self.time_hex.append(t1 - t0)
+                self.time_sq.append(t2 - t1)
 
             self.state_curr = [snapshot(self.sims[0]), snapshot(self.sims[1])]
             cur_step = int(round(self.sims[0].t))
