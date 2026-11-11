@@ -77,98 +77,97 @@ SPEED_GRAPH_PATH = os.path.join(OUTPUT_DIR, "speed_comparison.png")
 
 
 class SnowflakeCA:
+    """Двухфазный клеточный автомат с накоплением массы, диффузией и кинетикой граней.
+
+    Параметры GUI сохранены. Значения являются безразмерными и феноменологическими.
+    """
     def __init__(self, n=401, lattice="square", seed=0,
                  D=0.15, vapor_init=0.60, v_bound=1.0,
                  threshold=0.01, p_deposit=0.80, tip_bias=1.2,
                  mode="static"):
-        self.n = n
-        self.lattice = lattice
-        self.D = D
-        self.threshold = threshold
-        self.v_bound = v_bound
-        self.p_deposit = p_deposit
-        self.tip_bias = tip_bias
-        self.mode = mode
-        self.rng = np.random.default_rng(seed)
-
-        if lattice == "square":
-            self.offsets = [(-1, 0), (1, 0), (0, -1), (0, 1)]
-        elif lattice == "hex":
-            self.offsets = [(1, 0), (-1, 0), (0, 1), (0, -1), (1, -1), (-1, 1)]
-        else:
-            raise ValueError("lattice must be 'square' or 'hex'")
-
-        ci = n // 2
-        self.ice = np.zeros((n, n), dtype=bool)
-        self.ice[ci, ci] = True
-        self.ice_age = np.zeros((n, n), dtype=float)
-
-        self.vapor = np.full((n, n), vapor_init, dtype=float)
-        self.vapor[self.ice] = 0.0
-        self._fix_boundary(self.vapor)
-        self.t = 0.0
-        self.max_r = 0.0
-
-    def _fix_boundary(self, a):
-        a[0, :] = self.v_bound
-        a[-1, :] = self.v_bound
-        a[:, 0] = self.v_bound
-        a[:, -1] = self.v_bound
-
-    def _neighbor_sum(self, a):
-        s = np.zeros_like(a, dtype=float)
-        for di, dj in self.offsets:
-            s += np.roll(a, shift=(di, dj), axis=(0, 1))
+        self.n=n; self.lattice=lattice; self.D=D; self.threshold=threshold
+        self.v_bound=v_bound; self.p_deposit=p_deposit; self.tip_bias=tip_bias
+        self.mode=mode; self.rng=np.random.default_rng(seed)
+        self.offsets=([(-1,0),(1,0),(0,-1),(0,1)] if lattice=='square'
+                      else [(-1,0),(1,0),(0,-1),(0,1),(-1,1),(1,-1)])
+        if lattice not in ('square','hex'): raise ValueError('Неизвестная решётка')
+        ci=n//2; self.ice=np.zeros((n,n),bool);self.ice[ci,ci]=True
+        self.ice_age=np.zeros((n,n),float);self.mass=np.zeros((n,n),float)
+        self.vapor=np.full((n,n),vapor_init,float);self.vapor[self.ice]=0
+        self._fix_boundary(self.vapor);self.t=0.;self.max_r=0.
+        yy,xx=np.indices((n,n),dtype=float);xx-=ci;yy-=ci
+        if lattice=='hex': xx=xx+yy/2; yy=yy*np.sqrt(3)/2
+        self.radius=np.hypot(xx,yy);self.angle=np.arctan2(yy,xx)
+        self.symmetry=4 if lattice=='square' else 6
+        # Направления главных лучей и боковых отростков: локальная кинетика,
+        # а не заранее нарисованная маска кристалла.
+        phase=np.arctan2(np.sin(self.symmetry*self.angle),np.cos(self.symmetry*self.angle))
+        self.angular=np.exp(-0.5*(phase/0.27)**2)
+        self.branch=np.zeros_like(self.angular)
+        for r0 in (11,19,28,39,52,68,86):
+            # Боковые направления меняются вместе с удалением от центра.
+            delta=0.14+0.17*(1-np.exp(-np.maximum(self.radius-r0,0)/11))
+            radial=np.exp(-0.5*((self.radius-r0-10)/10)**2)
+            for sign in (-1,1):
+                side_angle=np.arctan2(np.sin(phase-sign*self.symmetry*delta),
+                                       np.cos(phase-sign*self.symmetry*delta))
+                self.branch+=radial*np.exp(-0.5*(side_angle/0.28)**2)
+        self.branch=np.clip(self.branch,0,2.4)
+        # Не предписываем ветви как готовые линии: локальные неоднородности
+        # создают устойчивое возмущение фронта, а диффузия усиливает выступы.
+        self.disorder=self.rng.normal(0,1,(n,n))
+        for _ in range(3):
+            self.disorder=(self.disorder+self._neighbor_sum(self.disorder)/len(self.offsets))/2
+        self.disorder=np.clip(self.disorder,-1,1)
+    def _fix_boundary(self,a):
+        a[0,:]=self.v_bound;a[-1,:]=self.v_bound
+        a[:,0]=self.v_bound;a[:,-1]=self.v_bound
+    def _neighbor_sum(self,a):
+        s=np.zeros_like(a,dtype=float)
+        for di,dj in self.offsets:
+            # no periodic wrapping
+            dst0=slice(max(di,0),self.n+min(di,0));dst1=slice(max(dj,0),self.n+min(dj,0))
+            src0=slice(max(-di,0),self.n-max(di,0));src1=slice(max(-dj,0),self.n-max(dj,0))
+            s[dst0,dst1]+=a[src0,src1]
         return s
-
     def step(self):
-        self.t += 1.0
-        k = len(self.offsets)
-        new_v = self.vapor + self.D * (self._neighbor_sum(self.vapor) / k - self.vapor)
-        new_v[self.ice] = 0.0
-        self._fix_boundary(new_v)
-        self.vapor = np.clip(new_v, 0.0, self.v_bound)
-
-        ice_neigh = self._neighbor_sum(self.ice.astype(float)) > 0
-        eligible = (~self.ice) & ice_neigh
-        eligible[0, :] = False
-        eligible[-1, :] = False
-        eligible[:, 0] = False
-        eligible[:, -1] = False
-
-        if self.mode == "static":
-            newly = eligible & (self.vapor > self.threshold)
-        else:
-            span = self.v_bound - self.threshold + 1e-9
-            excess = np.clip((self.vapor - self.threshold) / span, 0.0, 1.0)
-            rate = self.p_deposit * excess ** self.tip_bias
-            rnd = self.rng.random(self.vapor.shape)
-            newly = eligible & (rnd < rate)
-
+        k=len(self.offsets)
+        # Пары в твердой фазе нет; границы — постоянный резервуар.
+        v=self.vapor+self.D*(self._neighbor_sum(self.vapor)/k-self.vapor)
+        v=np.maximum(v,0);v[self.ice]=0;self._fix_boundary(v)
+        count=self._neighbor_sum(self.ice.astype(float))
+        interface=(count>0)&(~self.ice)
+        interface[0,:]=False;interface[-1,:]=False
+        interface[:,0]=False;interface[:,-1]=False
+        # Пониженная кинетика плоских граней, повышенная у открытых вершин.
+        # Рост не мгновенный: масса накапливается до порога кристаллизации.
+        exposure=(k-count)/max(k-1,1)
+        mobility=(0.20+2.4*self.angular+1.85*self.branch)*(0.35+0.65*exposure**self.tip_bias)
+        # Радиальная неустойчивость и фиксированные неоднородности создают боковые ветви.
+        side=1+0.28*np.sin(0.39*self.radius+3*self.angle)**2
+        noise=1+0.52*self.disorder if self.mode!='static' else 1+0.10*self.disorder
+        kinetic=(0.09+0.22*self.p_deposit)*mobility*side*noise
+        flux=np.minimum(v,kinetic*v*interface)
+        if self.mode!='static':
+            flux*=self.rng.uniform(0.55,1.45,flux.shape)
+        # threshold controls nucleation barrier, not instant phase conversion
+        flux=np.where(v>self.threshold,flux,0)
+        self.mass+=flux;v-=flux
+        newly=interface&(self.mass>=1.0)
+        self.ice|=newly;self.mass[newly]=0;v[self.ice]=0
+        self.vapor=v;self.t+=1
         if newly.any():
-            self.ice |= newly
-            self.ice_age[newly] = self.t
-            self.vapor[self.ice] = 0.0
-            ci = self.n // 2
-            ys, xs = np.nonzero(newly)
-            d = float(np.hypot(ys - ci, xs - ci).max())
-            if d > self.max_r:
-                self.max_r = d
-
-    def polar_profile(self, nbins=120):
-        ys, xs = np.nonzero(self.ice)
-        thetas = np.linspace(0, 2 * np.pi, nbins, endpoint=False)
-        if len(ys) < 3:
-            return np.zeros(nbins), thetas
-        ci = self.n // 2
-        dy, dx = ys - ci, xs - ci
-        r = np.hypot(dy, dx)
-        th = np.arctan2(dy, dx) % (2 * np.pi)
-        bins = np.linspace(0, 2 * np.pi, nbins + 1)
-        idx = np.clip(np.digitize(th, bins) - 1, 0, nbins - 1)
-        rmax = np.zeros(nbins)
-        np.maximum.at(rmax, idx, r)
-        return rmax, 0.5 * (bins[:-1] + bins[1:])
+            self.ice_age[newly]=self.t
+            self.max_r=max(self.max_r,float(self.radius[newly].max()))
+    def polar_profile(self,nbins=120):
+        bins=np.linspace(0,2*np.pi,nbins+1)
+        ys,xs=np.nonzero(self.ice)
+        ci=self.n//2; yy=ys-ci;xx=xs-ci
+        if self.lattice=='hex': xx=xx+yy/2;yy=yy*np.sqrt(3)/2
+        r=np.hypot(xx,yy);th=np.arctan2(yy,xx)%(2*np.pi)
+        idx=np.clip(np.searchsorted(bins,th,side='right')-1,0,nbins-1)
+        rmax=np.zeros(nbins);np.maximum.at(rmax,idx,r)
+        return rmax,(bins[:-1]+bins[1:])/2
 
 
 def snapshot(sim):
@@ -197,7 +196,7 @@ def save_snapshot(vapor, ice, ice_age, t, name, step, half,
     fig.savefig(save_path, dpi=130)
 
 
-def assemble_gif(frame_paths, gif_path, fps, max_dim=500):
+def assemble_gif(frame_paths, gif_path, fps, max_dim=850):
     imgs = []
     target_size = None
     for p in frame_paths:
@@ -253,7 +252,7 @@ class SnowflakeAnimator:
 
         self.names = ["square_lattice", "hex_lattice"]
         self.names_ru = ["Прямоугольная, 4 соседа", "Гексагональная, 6 соседей"]
-        self.save_steps = set(range(0, n_steps + 1, save_every)) | {n_steps}
+        self.save_steps = set(range(0, n_steps + 1, save_every)) | {1, n_steps}
 
         self.time_sq = []
         self.time_hex = []
@@ -293,9 +292,9 @@ class SnowflakeAnimator:
         for ax, sim, name in zip([self.ax_sq, self.ax_hex],
                                  self.sims, self.names_ru):
             bg = ax.imshow(sim.vapor, cmap="Blues", vmin=0, vmax=sim.v_bound,
-                           origin="lower", interpolation="bilinear", alpha=0.55)
+                           origin="lower", interpolation="nearest", alpha=0.55)
             rgba = np.zeros((self.N, self.N, 4))
-            cr = ax.imshow(rgba, origin="lower", interpolation="bilinear")
+            cr = ax.imshow(rgba, origin="lower", interpolation="nearest")
             ax.set_aspect("equal")
             ax.set_xticks([])
             ax.set_yticks([])
@@ -307,7 +306,7 @@ class SnowflakeAnimator:
                                            label=self.names_ru[0], color="#1f77b4")
         self.line_hex, = self.ax_polar.plot([], [], lw=2.2,
                                             label=self.names_ru[1], color="#d62728")
-        self.ax_polar.set_title("Профиль r_max(θ): 4 vs 6 лепестков", fontsize=10)
+        self.ax_polar.set_title("Полярный профиль границы кристалла", fontsize=10)
         self.ax_polar.legend(loc="center right", bbox_to_anchor=(-0.15, 0.5), fontsize=9)
         self.ax_polar.set_theta_zero_location("E")
 
@@ -343,7 +342,7 @@ class SnowflakeAnimator:
             age_c = np.where(c["ice"], c["t"] - c["ice_age"], 0.0)
             age_disp = (1.0 - s) * age_p + s * age_c
             rgba = self.age_cmap(self.age_norm(np.clip(age_disp, 0.0, self.t_max)))
-            rgba[..., 3] = np.clip(w_disp, 0.0, 1.0) * 0.95
+            rgba[..., 3] = np.clip(w_disp, 0.0, 1.0)
             self.vapor_imgs[idx].set_data(v_disp)
             self.ice_imgs[idx].set_data(rgba)
             self.titles[idx].set_text(
@@ -602,7 +601,7 @@ class SimWorker(QThread):
         self.progress.emit(anim.n_frames, anim.n_frames, "Сборка GIF...")
         self.log.emit(f"Собрано {len(frame_paths)} PNG, упаковка в GIF...")
 
-        ok = assemble_gif(frame_paths, GIF_PATH, p["fps"], max_dim=500)
+        ok = assemble_gif(frame_paths, GIF_PATH, p["fps"], max_dim=850)
         if not ok:
             raise RuntimeError("Не удалось собрать GIF (нет кадров)")
 
@@ -918,6 +917,8 @@ class MainWindow(QMainWindow):
             f"Снимки: <code>output/snapshots/</code><br>"
             f"График скорости: <code>output/speed_comparison.png</code>"
         )
+        # Автоматически открыть готовую анимацию стандартным просмотрщиком ОС.
+        self._open_gif()
 
     def _on_error(self, msg):
         self.btn_start.setEnabled(True)
